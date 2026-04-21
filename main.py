@@ -1,0 +1,74 @@
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+import random
+import time
+
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+state = {"T1":[],"T2":[],"B1":[],"B2":[],"p":0.5,"hits":0,"misses":0,"total":0,"history":[]}
+POOL = [f"page_{i}" for i in range(1, 20)]
+
+def evict():
+    if state["T1"]:
+        v = state["T1"].pop(0)
+        state["B1"].append(v)
+        if len(state["B1"]) > 4:
+            state["B1"].pop(0)
+    elif state["T2"]:
+        v = state["T2"].pop(0)
+        state["B2"].append(v)
+        if len(state["B2"]) > 4:
+            state["B2"].pop(0)
+
+def access(key):
+    state["total"] += 1
+    if key in state["T1"]:
+        state["T1"].remove(key)
+        state["T2"].append(key)
+        state["hits"] += 1
+        return True
+    if key in state["T2"]:
+        state["T2"].remove(key)
+        state["T2"].append(key)
+        state["hits"] += 1
+        return True
+    state["misses"] += 1
+    if key in state["B1"]:
+        state["p"] = min(1.0, state["p"] + 0.1)
+    elif key in state["B2"]:
+        state["p"] = max(0.0, state["p"] - 0.1)
+    if len(state["T1"]) + len(state["T2"]) >= 8:
+        evict()
+    state["T1"].append(key)
+    return False
+
+@app.get("/status")
+def status():
+    hr = round(state["hits"] / state["total"] * 100, 1) if state["total"] else 0.0
+    return {**state, "hit_rate": hr, "p": round(state["p"], 2), "history": state["history"]}
+
+@app.post("/simulate")
+def simulate():
+    results = []
+    hot = random.sample(POOL[:8], 4)
+    for _ in range(10):
+        key = random.choice(hot) if random.random() < 0.6 else random.choice(POOL)
+        hit = access(key)
+        results.append({"key": key, "result": "HIT" if hit else "MISS"})
+    hr = round(state["hits"] / state["total"] * 100, 1) if state["total"] else 0.0
+    state["history"].append({"hit_rate": hr, "time": round(time.time(), 1)})
+    if len(state["history"]) > 20:
+        state["history"].pop(0)
+    return {"requests": results, **state, "hit_rate": hr}
+
+@app.post("/reset")
+def reset():
+    state.update(T1=[], T2=[], B1=[], B2=[], p=0.5, hits=0, misses=0, total=0, history=[])
+    return {"status": "reset"}
